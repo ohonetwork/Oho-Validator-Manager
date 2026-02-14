@@ -1,318 +1,58 @@
-OHO Validator Manager (V32.1) — Technical Specification
-
-1. System Overview
-
-The OHO Validator Manager is a sovereign, on-chain validator lifecycle and governance contract designed for QBFT-based networks such as Hyperledger Besu.
-
-It provides:
-
-Deterministic validator set management
-
-Custody-separated staking
-
-Snapshot-based supermajority governance
-
-Bonded proposal anti-spam mechanics
-
-Slashing and pruning enforcement
-
-Liveness-safe proposal lifecycle handling
-
-The contract is designed to be:
-
-Non-upgradeable
-
-Adminless
-
-Governance-controlled
-
-Deterministic for consensus clients
-
-2. Core Architecture
-2.1 Custody Separation Model
-
-Roles:
-
-Staker
-
-Supplies capital
-
-Owns the stake economically
-
-Can withdraw stake after exit
-
-May fund multiple validators
-
-Signer
-
-Runs validator node
-
-Participates in consensus
-
-Votes in governance
-
-Cannot withdraw funds
-
-Invariant:
-
-1 signer ↔ 1 staker
-1 staker → N signers allowed
-
-
-Stake ownership always resolves via:
-
-stakerOf[signer]
-
-
-Signer compromise does not risk funds.
-
-2.2 Validator State Machine
-None → Active → Leaving → None
-
-None
-
-Not a validator
-
-Eligible to join
-
-Active
-
-In validator set
-
-Votes in governance
-
-Can propose
-
-Can request exit
-
-Leaving
-
-Removed from validator set
-
-In withdrawal delay
-
-Cannot vote or propose
-
-Transitions are strictly enforced.
-
-3. Staking Mechanics
-3.1 Fixed Stake Model
-
-Each validator requires:
-
-VALIDATOR_STAKE (fixed)
-
-
-Properties:
-
-No partial stake
-
-No top-ups
-
-No variable stake sizes
-
-No compounding
-
-Rationale:
-
-Simplifies economics
-
-Eliminates stake drift
-
-Makes slashing deterministic
-
-Improves auditability
-
-3.2 Join Flow
-
-Requirements:
-
-Exact stake deposit
-
-Signer unused
-
-Signer cooldown elapsed
-
-MAX_VALIDATORS not reached
-
-Effects:
-
-stakeBalance credited
-
-stakerOf set
-
-joinedAt recorded
-
-Validator added to set
-
-3.3 Exit Flow
-
-Signer calls requestExit():
-
-Immediate removal from validator set
-
-State → Leaving
-
-Withdrawal timer started
-
-This guarantees fast validator set updates for QBFT.
-
-3.4 Withdrawal Flow
-
-Staker calls withdrawStake(signer):
-
-Checks:
-
-Caller is staker
-
-Signer in Leaving
-
-Delay elapsed
-
-Effects:
-
-Stake returned
-
-Signer reset to None
-
-Cooldown started
-
-4. Governance Model
-4.1 Snapshot Governance
-
-At proposal creation:
-
-snapshotValidatorCount = validatorList.length
-
-
-Quorum:
-
-votes * 10000 >= snapshotValidatorCount * GOVERNANCE_BPS
-
-
-This prevents:
-
-Validator churn attacks
-
-Quorum griefing
-
-Mid-vote manipulation
-
-4.2 Proposal Types
-Type 1 — Rule
-
-Informational only
-
-Off-chain enforced
-
-Bond burns on expiry
-
-Type 2 — Prune
-
-Removes validator
-
-No slashing
-
-Used for liveness/performance
-
-Type 3 — Slash
-
-Applies fixed penalty
-
-Forces exit
-
-Burns portion of stake
-
-4.3 Proposal Bonds
-
-Purpose:
-
-Prevent spam
-
-Create economic friction
-
-Incentivize serious proposals
-
-Outcomes:
-
-Success → returned
-Failure → burned
-Expiry → burned
-
-4.4 Governance Restrictions
-
-Only Active validators can:
-
-Propose
-
-Vote
-
-Additional rules:
-
-Must have joined before proposal start
-
-Warmup delay before proposing
-
-One vote per validator
-
-5. Slashing Design
-
-Slash amount:
-
-VALIDATOR_STAKE * SLASH_BPS
-
-
-Defensive invariant:
-
-require(stakeBalance == VALIDATOR_STAKE)
-
-
-Properties:
-
-Single-shot slash
-
-Always on full stake
-
-No repeated partial slashes
-
-Validator forced to exit
-
-Burn is best-effort.
-
-6. Liveness Protections
-Expiry Handling
-
-Anyone can finalize expired proposals.
-
-Active Proposal Cap
-
-Limits governance spam.
-
-Serialized Removals
-
-One removal proposal per target.
-
-Defensive Counters
-
-activeProposalCount protected from underflow.
-
-7. Security Model
-7.1 Reentrancy Safety
-
-nonReentrant modifier
-
-CEI pattern
-
-7.2 Economic Safety
-
-Fixed stake
-
-Bonded governance
-
-Cooldowns
-
-7.3 Consensus Safety
-
-Deterministic validator ordering
-
-O(1) add/
+***
+
+# OHO Sovereign Validator Manager (V32.1)
+
+The **OHO Sovereign Validator Manager** is a decentralized, production-grade smart contract designed to manage the validator set for the OHO Network running on **Hyperledger Besu QBFT** consensus. It implements a "Sovereign" governance model, removing central administrative control in favor of algorithmic enforcement and validator-led consensus.
+
+## 🚀 Key Features
+
+### 1. Custody Separation (Stash & Controller Model)
+V32.1 implements a high-security custody model that separates capital from consensus power:
+*   **Staker (Cold Wallet):** Holds the 10,000,000 OHO stake. This address can be a hardware wallet (Ledger/Trezor). It is the only address authorized to withdraw funds.
+*   **Signer (Hot Node):** The key residing on the Besu server. It has the power to sign blocks and vote in governance but **zero power** to move or withdraw the staked funds.
+*   **Multi-Signer Support:** A single staker address can fund and control multiple validator nodes.
+
+### 2. Permissionless Automated Membership
+The contract enables a self-service network growth model:
+*   **Automatic Joins:** Any user with exactly 10,000,000 OHO can call `joinRequest(signer)` to immediately add a new node to the consensus set.
+*   **Capacity Management:** Hard-coded limit of **50 validators** to ensure optimal P2P performance at a 2-second block time.
+*   **Exit Lifecycle:** Validators can call `requestExit()` to leave the set. A **14-day withdrawal delay** is enforced to ensure "skin in the game" and prevent flash-manipulation of the validator set.
+
+### 3. "Fortress" Governance (90% Quorum)
+Governance is designed to be extremely conservative, ensuring the chain rules only change under near-unanimous agreement:
+*   **90% Threshold:** Rule changes (Type-1) require 90% of the active validator set to vote "Yes."
+*   **Anti-Hijack Snapshots:** A validator's voting power is determined at the moment a proposal is created. This prevents "Flash Joins" where an attacker adds nodes mid-vote to hijack the results.
+*   **Governance Warmup:** New validators must wait **1 day** before they are allowed to propose rule changes.
+
+### 4. Liveness & Slashing
+The contract provides tools to maintain the 2-second block time heartbeat:
+*   **Emergency Pruning:** A 90% majority can remove a "dead" or non-responsive node to prevent a governance deadlock.
+*   **Punitive Slashing:** Malicious actors can be slashed by **0.5% (50,000 OHO)**.
+*   **Honest Burn Accounting:** All slashed funds are sent to the `0x...dEaD` address, and the contract maintains a transparent `totalBurned` counter for supply auditing.
+
+### 5. Technical Specification & Performance
+*   **Besu QBFT Native:** Fully compatible with the `validatorcontractaddress` parameter in Besu 24.x and 25.x.
+*   **$O(1)$ Efficiency:** The `getValidators()` function is optimized for constant-time lookup, ensuring consensus checks do not add latency to the 2-second block production.
+*   **EIP-1559 Ready:** Fully compatible with the London hard fork and base-fee burning.
+
+## 📊 Governance Summary
+
+| Action | Required Threshold | Execution Type |
+| :--- | :--- | :--- |
+| **Join Network** | 10,000,000 OHO | Automatic |
+| **Leave Network** | Self-Triggered | 14-Day Delay |
+| **Rule Change** | 90% Unanimity | 7-Day Voting |
+| **Prune/Slash Node** | 90% Unanimity | Immediate |
+
+## 🛠 Deployment Details
+*   **Solidity Version:** 0.8.19
+*   **EVM Version:** London
+*   **Compiler Optimization:** Enabled (200 Runs)
+*   **Consensus Engine:** QBFT (Quorum Byzantine Fault Tolerance)
+
+---
+
+### Security Disclaimer
+*This contract governs the core consensus of the OHO Network. Changes to the logic via Type-1 proposals should be preceded by a minimum 7-day community review period.*
+
+***
